@@ -47,7 +47,8 @@
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="dataSync"
-            tools:node="merge" />
+            tools:node="merge"
+            tools:targetApi="q" />
 
         <!-- Main Compose Activity Entry Point -->
         <activity
@@ -87,6 +88,17 @@
         <receiver
             android:name=".core.receiver.DownloadActionReceiver"
             android:exported="false" />
+
+        <!-- FileProvider for safely sharing local/public downloaded media via content:// URIs -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
     </application>
 

@@ -4,6 +4,7 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.os.Build
 import com.youdrop.app.core.extractor.InnerTubeFastClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -567,16 +568,63 @@ object FastDirectDownloader {
     }
 
     private fun muxVideoAndAudio(videoFile: File, audioFile: File, outputFile: File) {
-        try {
-            muxVideoAndAudioMp4(videoFile, audioFile, outputFile)
-            return
-        } catch (e: Exception) {
-            Timber.w(e, "FastDirectDownloader: MediaMuxer failed, attempting FFmpeg -c copy fallback")
-            runCatching { outputFile.delete() }
+        val unsupportedMime = findUnsupportedPreQMuxerMime(videoFile, audioFile)
+        if (unsupportedMime != null) {
+            Timber.i(
+                "FastDirectDownloader: Skipping MediaMuxer on API %d for unsupported track MIME %s; using FFmpeg -c copy",
+                Build.VERSION.SDK_INT,
+                unsupportedMime
+            )
+        } else {
+            try {
+                muxVideoAndAudioMp4(videoFile, audioFile, outputFile)
+                return
+            } catch (e: Exception) {
+                Timber.w(e, "FastDirectDownloader: MediaMuxer failed, attempting FFmpeg -c copy fallback")
+                runCatching { outputFile.delete() }
+            }
         }
         val ffmpegSuccess = muxViaFfmpeg(videoFile, audioFile, outputFile)
         if (!ffmpegSuccess) {
             throw RuntimeException("Both MediaMuxer and FFmpeg copy failed to mux audio and video")
+        }
+    }
+
+    /**
+     * Checks whether [videoFile] or [audioFile] contains a track MIME unsupported by
+     * Android 9 (API 28) MP4 MediaMuxer (e.g. AV1 or Opus), returning the offending MIME.
+     */
+    private fun findUnsupportedPreQMuxerMime(videoFile: File, audioFile: File): String? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) return null
+        return findUnsupportedTrackMime(videoFile, "video/")
+            ?: findUnsupportedTrackMime(audioFile, "audio/")
+    }
+
+    /**
+     * Inspects the primary track matching [expectedPrefix] and returns its MIME if
+     * pre-Android 10 MediaMuxer cannot mux it into MP4.
+     */
+    private fun findUnsupportedTrackMime(mediaFile: File, expectedPrefix: String): String? {
+        val extractor = MediaExtractor()
+        return try {
+            extractor.setDataSource(mediaFile.absolutePath)
+            for (i in 0 until extractor.trackCount) {
+                val mime = extractor.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.lowercase() ?: continue
+                if (!mime.startsWith(expectedPrefix)) continue
+                val isUnsupportedOnPreQ = mime == "video/av01" ||
+                    mime == "audio/opus" ||
+                    mime == "video/x-vnd.on2.vp9" ||
+                    mime == "audio/vorbis" ||
+                    mime.contains("av01") ||
+                    mime.contains("opus")
+                return if (isUnsupportedOnPreQ) mime else null
+            }
+            null
+        } catch (e: Exception) {
+            Timber.d(e, "FastDirectDownloader: Track MIME pre-check failed for %s", mediaFile.name)
+            null
+        } finally {
+            runCatching { extractor.release() }
         }
     }
 
@@ -590,22 +638,43 @@ object FastDirectDownloader {
             val ffmpegBin = File(nativeDir, "libffmpeg.so")
             if (!ffmpegBin.exists() || !ffmpegBin.canExecute()) {
                 Timber.w("FastDirectDownloader: libffmpeg.so missing at %s", ffmpegBin.absolutePath)
-                return false
+                return@runCatching false
             }
 
-            val command = listOf(
-                ffmpegBin.absolutePath,
-                "-y",
-                "-hide_banner",
-                "-loglevel", "error",
-                "-i", videoFile.absolutePath,
-                "-i", audioFile.absolutePath,
-                "-c", "copy",
-                "-movflags", "+faststart",
-                outputFile.absolutePath
-            )
+            // Output files are often staged as `<name>.mp4.part`; pass `-f` explicitly so
+            // FFmpeg does not fail trying to infer the muxer format from `.part`.
+            val targetExt = File(outputFile.name.removeSuffix(".part")).extension.lowercase()
+            val ffmpegFormat = when (targetExt) {
+                "mkv" -> "matroska"
+                "webm" -> "webm"
+                else -> "mp4"
+            }
+
+            val command = buildList {
+                add(ffmpegBin.absolutePath)
+                add("-y")
+                add("-hide_banner")
+                add("-loglevel")
+                add("error")
+                add("-i")
+                add(videoFile.absolutePath)
+                add("-i")
+                add(audioFile.absolutePath)
+                add("-c")
+                add("copy")
+                if (ffmpegFormat == "mp4") {
+                    add("-movflags")
+                    add("+faststart")
+                }
+                add("-f")
+                add(ffmpegFormat)
+                add(outputFile.absolutePath)
+            }
             val process = ProcessBuilder(command).apply {
-                environment()["LD_LIBRARY_PATH"] = nativeDir
+                val existing = environment()["LD_LIBRARY_PATH"]?.takeIf { it.isNotBlank() }
+                environment()["LD_LIBRARY_PATH"] = listOfNotNull(nativeDir, existing)
+                    .distinct()
+                    .joinToString(File.pathSeparator)
                 redirectErrorStream(true)
             }.start()
 
@@ -617,9 +686,10 @@ object FastDirectDownloader {
                 } catch (_: Exception) {}
             }
 
-            val finished = process.waitFor(10, java.util.concurrent.TimeUnit.MINUTES)
+            val finished = process.waitFor(10, TimeUnit.MINUTES)
             if (!finished) {
                 process.destroyForcibly()
+                runCatching { process.waitFor(200, TimeUnit.MILLISECONDS) }
                 drainThread.interrupt()
                 return@runCatching false
             }
@@ -630,7 +700,14 @@ object FastDirectDownloader {
                 Timber.w("FastDirectDownloader: FFmpeg mux failed (exit=%d)", exitCode)
             }
             success
-        }.getOrDefault(false)
+        }.getOrElse { e ->
+            Timber.w(e, "FastDirectDownloader: FFmpeg mux failed")
+            false
+        }.also { ok ->
+            if (!ok) {
+                runCatching { outputFile.delete() }
+            }
+        }
     }
 
     /**

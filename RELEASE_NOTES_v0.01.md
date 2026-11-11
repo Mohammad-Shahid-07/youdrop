@@ -35,14 +35,14 @@
 
 - No sign-up, analytics, crash reporting or ad SDK.
 - Cookies and downloads stay on your device.
-- Android 10 (API 29) or newer.
+- Android 9 (API 28) or newer.
 - Open source under GPL-3.0.
 
 ## Install
 
 1. [**Download the universal APK**](https://github.com/Mohammad-Shahid-07/youdrop/releases/download/v0.01/YouDrop-v0.01-universal.apk) (215 MB). One file that works on every supported device.
 2. Open the file and allow **Install unknown apps** when prompted.
-3. Launch YouDrop and allow notifications for download progress.
+3. Launch YouDrop and allow notifications (Android 13+) and storage access (Android 9) when prompted.
 4. Optional: exempt YouDrop from battery optimization for long background downloads.
 
 <details>

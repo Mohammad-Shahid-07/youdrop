@@ -1,8 +1,7 @@
 package com.youdrop.app.ui.queue
 
 import android.content.Context
-import android.content.Intent
-import android.net.Uri
+import android.widget.Toast
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -34,6 +33,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.fillMaxSize
+import com.youdrop.app.core.storage.MediaStoreExporter
 import com.youdrop.app.core.storage.RemoteThumbnailImage
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -262,7 +262,7 @@ fun QueueDrawerModal(
                             items(completedTasks, key = { it.id }) { task ->
                                 CompletedTaskRow(
                                     task = task,
-                                    onOpen = { openMediaFile(context, task.outputFileUri) },
+                                    onOpen = { openMediaFile(context, task.outputFileUri, task.isAudioOnly, task.outputExt) },
                                     onOpenYouTube = { onOpenUrl(task.url) },
                                     onDelete = { queueRepository.deleteTask(task.id) }
                                 )
@@ -574,17 +574,31 @@ fun EmptyQueuePlaceholder(text: String) {
     }
 }
 
-private fun openMediaFile(context: Context, fileUri: String?) {
-    if (fileUri.isNullOrBlank()) return
+private fun openMediaFile(
+    context: Context,
+    fileUri: String?,
+    isAudioOnly: Boolean,
+    outputExt: String?
+) {
+    if (fileUri.isNullOrBlank()) {
+        Toast.makeText(context, "Media file path is unavailable", Toast.LENGTH_SHORT).show()
+        return
+    }
+    val intent = MediaStoreExporter.createViewMediaIntent(
+        context = context,
+        uriString = fileUri,
+        isAudioOnly = isAudioOnly,
+        fallbackExt = outputExt
+    )
+    if (intent == null) {
+        Toast.makeText(context, "Media file is unavailable", Toast.LENGTH_SHORT).show()
+        return
+    }
     try {
-        val uri = Uri.parse(fileUri)
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, if (fileUri.endsWith(".m4a") || fileUri.endsWith(".opus")) "audio/*" else "video/*")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
         context.startActivity(intent)
     } catch (e: Exception) {
         Timber.e(e, "Could not open media file URI: %s", fileUri)
+        Toast.makeText(context, "No app available to play this media file", Toast.LENGTH_SHORT).show()
     }
 }
 

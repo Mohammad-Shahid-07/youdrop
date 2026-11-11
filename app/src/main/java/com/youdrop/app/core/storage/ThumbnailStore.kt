@@ -2,6 +2,7 @@ package com.youdrop.app.core.storage
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.Build
 import android.util.LruCache
 import com.youdrop.app.App
 import com.youdrop.app.core.network.NetworkConstants
@@ -130,13 +131,19 @@ object ThumbnailStore {
     private fun fetchBytes(url: String): ByteArray? {
         if (!url.startsWith("http://") && !url.startsWith("https://")) return null
         return try {
+            // BitmapFactory only decodes AVIF natively starting in Android 12 (API 31).
+            val acceptHeader = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+            } else {
+                "image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+            }
             val request = Request.Builder()
                 .url(url)
                 // i.ytimg.com rejects requests that look like a bare HTTP client. Send the same
                 // browser headers a YouTube page would send for its own <img> tags.
                 .header("User-Agent", NetworkConstants.activeUserAgent.ifBlank { NetworkConstants.DEFAULT_USER_AGENT })
                 .header("Referer", "https://www.youtube.com/")
-                .header("Accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+                .header("Accept", acceptHeader)
                 .build()
 
             App.sharedOkHttpClient.newCall(request).execute().use { response ->

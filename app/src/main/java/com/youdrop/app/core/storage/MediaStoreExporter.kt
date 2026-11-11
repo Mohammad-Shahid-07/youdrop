@@ -2,12 +2,14 @@ package com.youdrop.app.core.storage
 
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import androidx.core.content.FileProvider
 import timber.log.Timber
 import java.io.File
 import java.io.FileInputStream
@@ -92,26 +94,29 @@ object MediaStoreExporter {
             Environment.DIRECTORY_DOWNLOADS
         }
         val rawSubName = effectiveFolder.substringAfter('/', "YouDrop")
-        val subName = rawSubName.replace(Regex("[^A-Za-z0-9 _.-]"), "_")
+        var subName = rawSubName.replace(Regex("[^A-Za-z0-9 _.-]"), "_")
             .split('/')
             .filter { it.isNotBlank() && it != "." && it != ".." }
             .joinToString("/")
             .ifBlank { "YouDrop" }
 
         val basePublicDir = Environment.getExternalStoragePublicDirectory(baseDirType)
-        val publicDir = File(basePublicDir, subName)
-        if (!publicDir.canonicalPath.startsWith(basePublicDir.canonicalPath)) {
+        var publicDir = File(basePublicDir, subName)
+        val baseCanonical = runCatching { basePublicDir.canonicalPath }.getOrNull()
+        val dirCanonical = runCatching { publicDir.canonicalPath }.getOrNull()
+        val isWithinBase = baseCanonical != null && dirCanonical != null && (
+            dirCanonical == baseCanonical ||
+                dirCanonical.startsWith(
+                    if (baseCanonical.endsWith(File.separator)) baseCanonical else baseCanonical + File.separator
+                )
+            )
+        if (!isWithinBase) {
             Timber.w("Path traversal detected in folder: %s; falling back to YouDrop", rawSubName)
-        }
-        if (!publicDir.exists()) publicDir.mkdirs()
-
-        var fileName = "$sanitizedTitle$extSuffix"
-        var counter = 1
-        while (File(publicDir, fileName).exists()) {
-            fileName = "$sanitizedTitle ($counter)$extSuffix"
-            counter++
+            subName = "YouDrop"
+            publicDir = File(basePublicDir, subName)
         }
 
+        val fileName = "$sanitizedTitle$extSuffix"
         val mimeType = resolveMimeType(actualExt, isAudioOnly)
         val relativeSubDir = "$baseDirType/$subName"
 
@@ -226,6 +231,54 @@ object MediaStoreExporter {
         )
     }
 
+    /**
+     * Builds an [Intent.ACTION_VIEW] for a completed download, converting `file://` URIs via
+     * [FileProvider] to prevent `FileUriExposedException` on Android 7.0–9 (API 24–28).
+     */
+    fun createViewMediaIntent(
+        context: Context,
+        uriString: String?,
+        isAudioOnly: Boolean = false,
+        fallbackExt: String? = null
+    ): Intent? {
+        if (uriString.isNullOrBlank()) return null
+        val uri = runCatching { Uri.parse(uriString) }.getOrNull() ?: return null
+        val viewUri = if (uri.scheme.equals("file", ignoreCase = true)) {
+            val path = uri.path?.takeIf { it.isNotBlank() } ?: return null
+            val file = File(path)
+            if (!file.exists() || !file.isFile) {
+                Timber.w("Media file missing or not a file for view intent: %s", path)
+                return null
+            }
+            try {
+                FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    file
+                )
+            } catch (e: Exception) {
+                Timber.w(e, "Failed to map file via FileProvider: %s", file.absolutePath)
+                return null
+            }
+        } else {
+            uri
+        }
+
+        val resolvedType = runCatching { context.contentResolver.getType(viewUri) }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() && !it.equals("application/octet-stream", ignoreCase = true) }
+        val ext = uri.path?.let { File(it).extension.trim().lowercase() }?.takeIf { it.isNotBlank() }
+            ?: fallbackExt?.trim()?.trimStart('.')?.lowercase()?.takeIf { it.isNotBlank() }
+        val mimeType = resolvedType
+            ?: ext?.let { resolveMimeType(it, isAudioOnly) }
+            ?: if (isAudioOnly) "audio/*" else "video/*"
+
+        return Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(viewUri, mimeType)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+    }
+
     /** Reads the byte count MediaStore/OpenableColumns reports for a content or file URI. */
     fun sizeBytesOf(context: Context, uriString: String?): Long {
         if (uriString.isNullOrBlank()) return 0L
@@ -261,7 +314,10 @@ object MediaStoreExporter {
         return when (ext.lowercase()) {
             "mp4" -> if (isAudioOnly) "audio/mp4" else "video/mp4"
             "m4a" -> "audio/mp4"
+            "aac" -> "audio/aac"
+            "flac" -> "audio/flac"
             "opus" -> "audio/ogg"
+            "ogg" -> "audio/ogg"
             "mp3" -> "audio/mpeg"
             "webm" -> if (isAudioOnly) "audio/webm" else "video/webm"
             "mkv" -> "video/x-matroska"

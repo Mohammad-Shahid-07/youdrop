@@ -373,7 +373,7 @@ object DirectJvmStreamDownloader {
                         "-c", "copy",
                         partFile.absolutePath
                     )
-                    val proc = ProcessBuilder(cmd).directory(parentDir).redirectErrorStream(true).start()
+                    val proc = startFFmpegProcess(context, cmd, parentDir)
                     val code = runProcessSafely(proc, timeoutSeconds = 600L) { isCancelled() }
                     if (code == 0 && partFile.exists() && partFile.length() > 0) {
                         keepParts.add(partFile)
@@ -393,7 +393,7 @@ object DirectJvmStreamDownloader {
                 "-c", "copy",
                 lastPartFile.absolutePath
             )
-            val lastProc = ProcessBuilder(lastCmd).directory(parentDir).redirectErrorStream(true).start()
+            val lastProc = startFFmpegProcess(context, lastCmd, parentDir)
             val lastCode = runProcessSafely(lastProc, timeoutSeconds = 600L) { isCancelled() }
             if (lastCode == 0 && lastPartFile.exists() && lastPartFile.length() > 0) {
                 keepParts.add(lastPartFile)
@@ -415,7 +415,7 @@ object DirectJvmStreamDownloader {
                     "-c", "copy",
                     finalTrimmed.absolutePath
                 )
-                val concatProc = ProcessBuilder(concatCmd).directory(parentDir).redirectErrorStream(true).start()
+                val concatProc = startFFmpegProcess(context, concatCmd, parentDir)
                 val concatCode = runProcessSafely(concatProc, timeoutSeconds = 600L) { isCancelled() }
 
                 keepParts.forEach { it.delete() }
@@ -474,6 +474,29 @@ object DirectJvmStreamDownloader {
         return candidates.firstOrNull { it.exists() }
     }
 
+    /** Starts an FFmpeg process with `LD_LIBRARY_PATH` configured for `libffmpeg.so` and package libs. */
+    private fun startFFmpegProcess(
+        context: Context,
+        cmd: List<String>,
+        workingDir: File?
+    ): Process {
+        val nativeDir = context.applicationInfo.nativeLibraryDir
+        val ffmpegLibDir = File(cmd.first()).parentFile?.parentFile?.let { File(it, "lib") }
+            ?.takeIf { it.isDirectory }?.absolutePath
+        val ldPaths = listOfNotNull(
+            ffmpegLibDir?.takeIf { it != nativeDir },
+            nativeDir
+        )
+        return ProcessBuilder(cmd).apply {
+            workingDir?.let { directory(it) }
+            val existing = environment()["LD_LIBRARY_PATH"]?.takeIf { it.isNotBlank() }
+            environment()["LD_LIBRARY_PATH"] = (ldPaths + listOfNotNull(existing))
+                .distinct()
+                .joinToString(File.pathSeparator)
+            redirectErrorStream(true)
+        }.start()
+    }
+
     private fun runFFmpegMux(
         context: Context,
         videoFile: File,
@@ -495,10 +518,7 @@ object DirectJvmStreamDownloader {
             )
             Timber.i("DirectJvm: Running FFmpeg via ProcessBuilder: %s", cmd.joinToString(" "))
 
-            val process = ProcessBuilder(cmd)
-                .directory(videoFile.parentFile)
-                .redirectErrorStream(true)
-                .start()
+            val process = startFFmpegProcess(context, cmd, videoFile.parentFile)
 
             val exitCode = runProcessSafely(process, timeoutSeconds = 600L) { isCancelled() }
             Timber.i("DirectJvm: FFmpeg exited with code %d", exitCode)

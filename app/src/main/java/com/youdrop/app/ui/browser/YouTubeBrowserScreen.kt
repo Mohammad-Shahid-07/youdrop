@@ -91,6 +91,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.youdrop.app.core.extractor.DownloadRequestSpec
 import com.youdrop.app.core.network.NetworkConstants
 import com.youdrop.app.core.queue.QueueRepository
 import com.youdrop.app.core.webview.AdBlockEngine
@@ -196,12 +197,50 @@ fun YouTubeBrowserScreen(
 
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val pendingStorageSpecs = remember { mutableListOf<DownloadRequestSpec>() }
+    var isStoragePermissionInFlight by remember { mutableStateOf(false) }
+
+    fun enqueueSpecsWithNotice(specs: List<DownloadRequestSpec>, warningMessage: String? = null) {
+        if (specs.isEmpty()) return
+        specs.forEach { queueRepository.enqueue(it) }
+        val message = warningMessage ?: if (specs.size == 1) {
+            val spec = specs.first()
+            "Queued: ${spec.title.take(28)}... (${spec.outputExtension.uppercase()})"
+        } else {
+            "Queued ${specs.size} downloads"
+        }
+        scope.launch {
+            snackbarHostState.showSnackbar(message = message)
+        }
+    }
 
     // Notification Permission Launcher (Android 13+ / API 33+)
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         Timber.i("POST_NOTIFICATIONS permission granted: %b", isGranted)
+    }
+
+    // Storage Permission Launcher (Android 9 / API <= 28)
+    val storagePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        isStoragePermissionInFlight = false
+        Timber.i("WRITE_EXTERNAL_STORAGE permission granted: %b", isGranted)
+        val specsToEnqueue = pendingStorageSpecs.toList()
+        pendingStorageSpecs.clear()
+        val warningMessage = if (!isGranted) {
+            "Storage permission denied — downloads will save to app-private storage unless enabled in Settings."
+        } else {
+            null
+        }
+        if (specsToEnqueue.isNotEmpty()) {
+            enqueueSpecsWithNotice(specsToEnqueue, warningMessage = warningMessage)
+        } else if (warningMessage != null) {
+            scope.launch {
+                snackbarHostState.showSnackbar(message = warningMessage)
+            }
+        }
     }
 
     // Android System Back Navigation: route through WebView history when on Browser page
@@ -489,13 +528,29 @@ fun YouTubeBrowserScreen(
                         }
                     }
 
-                    // Enqueue into Room DB & WorkManager
-                    queueRepository.enqueue(spec)
-
-                    scope.launch {
-                        snackbarHostState.showSnackbar(
-                            message = "Queued: ${spec.title.take(28)}... (${spec.outputExtension.uppercase()})"
-                        )
+                    // On Android 9 (API <= 28), request WRITE_EXTERNAL_STORAGE before enqueueing so
+                    // completed downloads can export to public Downloads rather than app-private storage.
+                    if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
+                        ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+                    ) {
+                        pendingStorageSpecs.add(spec)
+                        if (!isStoragePermissionInFlight) {
+                            isStoragePermissionInFlight = true
+                            try {
+                                storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                            } catch (e: Exception) {
+                                isStoragePermissionInFlight = false
+                                Timber.w(e, "Could not launch storage permission prompt")
+                                val fallbackSpecs = pendingStorageSpecs.toList()
+                                pendingStorageSpecs.clear()
+                                enqueueSpecsWithNotice(
+                                    fallbackSpecs,
+                                    warningMessage = "Storage permission prompt failed — saving to app-private storage."
+                                )
+                            }
+                        }
+                    } else {
+                        enqueueSpecsWithNotice(listOf(spec))
                     }
                 },
                 onDismiss = {

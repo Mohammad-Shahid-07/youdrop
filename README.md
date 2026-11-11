@@ -9,7 +9,7 @@
 <a href="https://github.com/Mohammad-Shahid-07/youdrop/releases/download/v0.01/YouDrop-v0.01-universal.apk">
   <img src="https://img.shields.io/badge/Download_APK-v0.01-ff2d55?style=for-the-badge&logo=android&logoColor=white" alt="Download YouDrop v0.01" />
 </a>
-<img src="https://img.shields.io/badge/Android-10%2B-3ddc84?style=for-the-badge&logo=android&logoColor=white" alt="Android 10 or newer" />
+<img src="https://img.shields.io/badge/Android-9%2B-3ddc84?style=for-the-badge&logo=android&logoColor=white" alt="Android 9 or newer" />
 <img src="https://img.shields.io/badge/Kotlin-2.1-7f52ff?style=for-the-badge&logo=kotlin&logoColor=white" alt="Kotlin 2.1" />
 <img src="https://img.shields.io/badge/License-GPL--3.0-ff2d55?style=for-the-badge" alt="GPL-3.0 license" />
 
@@ -99,11 +99,12 @@ All builds contain the same app and are signed with the same release key. When i
 
 SHA-256 checksums are published as [`SHA256SUMS.txt`](https://github.com/Mohammad-Shahid-07/youdrop/releases/download/v0.01/SHA256SUMS.txt).
 
-> Android 10 (API 29) or newer is required. The APK is large because it bundles Python, yt-dlp, FFmpeg, aria2c and QuickJS for on-device extraction and merging.
+> Android 9 (API 28) or newer is required. The APK is large because it bundles Python, yt-dlp, FFmpeg, aria2c and QuickJS for on-device extraction and merging.
 
 ### First launch checklist
 
 - **Notifications** — required for live download progress on Android 13+.
+- **Storage permission (Android 9)** — grant Storage access when prompted on Android 9 (Pie) so completed downloads export to public `Download/YouDrop` / `Music/YouDrop` folders.
 - **Battery optimization** — exempt YouDrop if your phone kills long background jobs.
 - **Download engine** — leave it on **Fast** unless a specific video refuses to finish.
 - **Storage** — downloads are saved to `Download/YouDrop`; audio-only files can go to `Music/YouDrop`.

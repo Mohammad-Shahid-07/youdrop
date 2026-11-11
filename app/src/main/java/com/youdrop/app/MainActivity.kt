@@ -3,6 +3,7 @@ package com.youdrop.app
 import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
@@ -54,6 +55,18 @@ class MainActivity : ComponentActivity() {
                     androidx.core.view.WindowInsetsControllerCompat(window, window.decorView)
                 }
                 LaunchedEffect(currentTheme.isDark) {
+                    val barStyle = if (currentTheme.isDark) {
+                        SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+                    } else {
+                        SystemBarStyle.light(
+                            android.graphics.Color.TRANSPARENT,
+                            android.graphics.Color.TRANSPARENT
+                        )
+                    }
+                    enableEdgeToEdge(
+                        statusBarStyle = barStyle,
+                        navigationBarStyle = barStyle
+                    )
                     insetsController.isAppearanceLightStatusBars = !currentTheme.isDark
                     insetsController.isAppearanceLightNavigationBars = !currentTheme.isDark
                 }

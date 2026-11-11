@@ -2676,3 +2676,98 @@ All four are signed with certificate SHA-256 `21249cb9dc2c2c12f86771ce4aef597b03
   - `YouDrop-v0.01-x86_64.apk` - `48242a0f...07d941`, 67,669,754 bytes
   - `SHA256SUMS.txt` - `a15ef4b9...623b9a`, 379 bytes
 - The `v0.01` tag remains at `17a4701`, the code commit the APKs were built from. Later commits are documentation only.
+
+---
+
+## Audit Entry - November 11, 2026: Android 9 (API 28) Compatibility
+- **Date/Time**: 2026-11-11T20:35:00+05:30
+- **Scope**: Lower minimum supported SDK from Android 10 (API 29) to Android 9 (API 28, Pie) while keeping Android 10–16 behavior intact.
+
+### 1. Timestamp & Target Files/Components
+
+- **`app/build.gradle.kts`** — Lower `minSdk` from `29` to `28` while retaining `compileSdk = 35`, `targetSdk = 35`, core library desugaring (`desugar_jdk_libs_nio:2.1.3`), ABI splits, and `useLegacyPackaging = true`.
+- **`app/src/main/AndroidManifest.xml`** — Register `androidx.core.content.FileProvider` (`${applicationId}.fileprovider`) and add `tools:targetApi="q"` on `SystemForegroundService` (`android:foregroundServiceType="dataSync"`), preserving `WRITE_EXTERNAL_STORAGE` (`maxSdkVersion="29"`) and `READ_EXTERNAL_STORAGE` (`maxSdkVersion="32"`).
+- **`app/src/main/res/xml/file_paths.xml`** *(new)* — Expose `external-path`, `external-files-path`, and `files-path` roots for `FileProvider`.
+- **`app/src/main/java/com/youdrop/app/core/storage/MediaStoreExporter.kt`** — Harden canonical path-traversal reset, keep legacy public filesystem directory/collision handling scoped to `< Q` and fallback paths, expand `resolveMimeType`, and add `createViewMediaIntent(...)` for `FileProvider`-backed `ACTION_VIEW` intents.
+- **`app/src/main/java/com/youdrop/app/core/engine/FastDirectDownloader.kt`** — Pre-inspect `< Q` track MIMEs via `MediaExtractor`, skip `MediaMuxer` for unsupported pre-Q codecs directly to FFmpeg, pass explicit `-f` container flags when muxing `.part` files, preserve `LD_LIBRARY_PATH`, and clean up partial files on failure.
+- **`app/src/main/java/com/youdrop/app/core/engine/DirectJvmStreamDownloader.kt`** — Introduce `startFFmpegProcess(...)` so `LD_LIBRARY_PATH` includes `nativeLibraryDir` and package `lib` across muxing and SponsorBlock trimming.
+- **`app/src/main/java/com/youdrop/app/core/storage/ThumbnailStore.kt`** — Gate `image/avif,` in the HTTP `Accept` header to Android 12+ (`Build.VERSION_CODES.S`).
+- **`app/src/main/java/com/youdrop/app/ui/downloads/DownloadsScreen.kt`** & **`app/src/main/java/com/youdrop/app/ui/queue/QueueDrawerModal.kt`** — Route completed media opening through `MediaStoreExporter.createViewMediaIntent(...)` with task metadata and Toast fallbacks.
+- **`app/src/main/java/com/youdrop/app/ui/browser/YouTubeBrowserScreen.kt`** — Request `WRITE_EXTERNAL_STORAGE` on `<= Build.VERSION_CODES.P` before enqueueing downloads, buffering concurrent/batch specs cleanly and falling back to app-private storage with Snackbar notice if denied.
+- **`app/src/main/java/com/youdrop/app/ui/settings/SettingsScreen.kt`** — Display an Android 9-only (`<= Build.VERSION_CODES.P`) `Storage Permission (Android 9)` status row and grant/App Settings action inside `Storage & Destination`.
+- **`app/src/main/java/com/youdrop/app/MainActivity.kt`** — Re-apply `enableEdgeToEdge(...)` with explicit transparent dark/light `SystemBarStyle` whenever `currentTheme.isDark` changes.
+- **`README.md`** — Update badge/requirement text to Android 9 (API 28)+ and document the Android 9 Storage permission prompt in the first launch checklist.
+- **`RELEASE_NOTES_v0.01.md`** — Update requirement line from Android 10 (API 29) to Android 9 (API 28)+ and note the Android 9 Storage permission prompt in the install steps.
+- **`AUDIT_LOG.md`** — Record the Android 9 compatibility changes, release APK packaging, and verification results.
+
+### 2. Technical Rationale
+
+- **Dependency & Packaging Compatibility**: Local Gradle cache inspection confirmed all dependencies support API 28 (`youtubedl-android:0.18.1` AARs declare `minSdkVersion="24"`; AndroidX Core/WorkManager/Compose/Activity declare `minSdkVersion="21"` or `"19"`; Room/Timber declare `"14"`; `desugar_jdk_libs_nio:2.1.3` supports `minSdk >= 21` for `NewPipeExtractor:v0.24.4` Java 11 bytecode). Keeping `useLegacyPackaging = true` and `android:extractNativeLibs="true"` ensures PackageManager extracts `libpython.so`, `libffmpeg.so`, `libffprobe.so`, `libaria2c.so`, and `libqjs.so` into `nativeLibraryDir` on both API 28 and API 29+.
+- **Legacy Public Storage & `FileProvider` over Raw `file://` URIs**: Android 9 lacks `MediaStore.Downloads`, `RELATIVE_PATH`, and `IS_PENDING`, so `MediaStoreExporter` exports via `exportViaDirectFilesystem` (`Environment.getExternalStoragePublicDirectory`) and stores `file://` URIs in Room (`sizeBytesOf` and `QueueRepository.deleteTask()` rely on `file://` or `content://`). Converting `file://` URIs lazily through `FileProvider` inside `createViewMediaIntent(...)` avoids `FileUriExposedException` (API 24+) without altering DB storage semantics or Android 10+ `MediaStore` URIs.
+- **Explicit Pre-Q `MediaMuxer` Codec Bypass**: Android 9's MP4 `MediaMuxer` fails on AV1, Opus, VP9, and Vorbis streams. Detecting those MIMEs beforehand on `< Q` avoids an unnecessary failed mux and file deletion, while inferring the container from `outputFile.name.removeSuffix(".part")` fixes FFmpeg muxing into `.part` staging files.
+- **Explicit `SystemBarStyle` on Theme Change**: Android 9 commonly runs with light system `uiMode`, causing default `SystemBarStyle.auto` to draw a light navigation-bar scrim beneath light icons when YouDrop defaults to its dark `Obsidian` theme.
+
+### 3. Architecture & State Flow
+
+- **Android 9 Download & Export Pipeline**:
+  1. In `YouTubeBrowserScreen`, `QualityPickerBottomSheet`'s `onConfirmDownload` checks `Build.VERSION.SDK_INT <= Build.VERSION_CODES.P && WRITE_EXTERNAL_STORAGE != GRANTED`; if ungranted, `DownloadRequestSpec` items are appended to `pendingStorageSpecs` while a single `storagePermissionLauncher` prompt runs (`isStoragePermissionInFlight`).
+  2. When resolved, `enqueueSpecsWithNotice(...)` enqueues all buffered specs into `QueueRepository` (showing a Snackbar warning on denial that files save to app-private storage until Storage permission is enabled in Settings).
+  3. On `<= P` with Storage granted, `MediaStoreExporter.exportToPublicDownloads(...)` routes to `exportViaDirectFilesystem(...)`, writes into sanitized `Download/`, `Music/`, or `Movies/` subdirectories, indexes via `MediaScannerConnection.scanFile`, and stores `Uri.fromFile(targetFile).toString()`; on denial/failure it preserves the completed file in `work_queue/$taskId`. On Android 10+ (`>= Q`), `MediaStore` `IS_PENDING` insertion remains unchanged without creating directories on the public filesystem ahead of time.
+  4. When opening a completed download in `DownloadsScreen` or `QueueDrawerModal`, `openMediaFile(...)` calls `MediaStoreExporter.createViewMediaIntent(...)`, which maps `file://` URIs through `FileProvider` (`@xml/file_paths`) and passes `content://` URIs directly to `Intent.ACTION_VIEW`.
+- **Android 9 Edge-to-Edge, Muxing & Thumbnails**:
+  - `MainActivity` synchronizes `enableEdgeToEdge(statusBarStyle = barStyle, navigationBarStyle = barStyle)` with `WindowInsetsControllerCompat` on `currentTheme.isDark`.
+  - `FastDirectDownloader` pre-checks `< Q` tracks via `MediaExtractor` and routes unsupported tracks directly to `muxViaFfmpeg`; `DirectJvmStreamDownloader` runs FFmpeg via `startFFmpegProcess` with `LD_LIBRARY_PATH` configured.
+  - `ThumbnailStore` omits `image/avif,` below Android 12 (`S`), preventing undecodable AVIF responses on API 28–30.
+
+### 4. Code / Schema Specification
+
+- **Build & Manifest**:
+  - `app/build.gradle.kts` (L26): `minSdk = 28` (`compileSdk = 35`, `targetSdk = 35`).
+  - `app/src/main/res/xml/file_paths.xml`: `<external-path name="external_storage" path="." />`, `<external-files-path name="external_files" path="." />`, `<files-path name="internal_files" path="." />`.
+  - `app/src/main/AndroidManifest.xml`: `SystemForegroundService` adds `tools:targetApi="q"` (L51); `<provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.fileprovider" android:exported="false" android:grantUriPermissions="true">` with `android.support.FILE_PROVIDER_PATHS` -> `@xml/file_paths` (L93–101).
+- **`MediaStoreExporter.kt`**:
+  - `exportToPublicDownloads(...)`: validates canonical path containment (`dirCanonical == baseCanonical || dirCanonical.startsWith(if (baseCanonical.endsWith(File.separator)) baseCanonical else baseCanonical + File.separator)`), resetting `subName = "YouDrop"` and `publicDir = File(basePublicDir, subName)` on violation; removes pre-`Q` `publicDir.mkdirs()` and collision probing before `Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q`.
+  - `fun createViewMediaIntent(context: Context, uriString: String?, isAudioOnly: Boolean = false, fallbackExt: String? = null): Intent?`: returns `null` for blank/invalid URIs or missing non-regular `file://` targets; wraps `FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)` in `try/catch`; resolves MIME from `contentResolver.getType(viewUri)` (ignoring `application/octet-stream`), `uri.path` extension, `fallbackExt`, or `audio/*` / `video/*`; adds `Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK`.
+  - `resolveMimeType(ext: String, isAudioOnly: Boolean): String`: supports `mp4`, `m4a`, `aac`, `flac`, `opus`, `ogg`, `mp3`, `webm`, `mkv`.
+- **`FastDirectDownloader.kt`**:
+  - `private fun findUnsupportedPreQMuxerMime(videoFile: File, audioFile: File): String?` and `private fun findUnsupportedTrackMime(mediaFile: File, expectedPrefix: String): String?`: inspects primary video/audio tracks (`extractor.release()` in `finally`) on `< Q` for `video/av01`, `audio/opus`, `video/x-vnd.on2.vp9`, `audio/vorbis`, or `av01`/`opus` substrings.
+  - `private fun muxViaFfmpeg(videoFile: File, audioFile: File, outputFile: File): Boolean`: strips `.part` suffix to pass `-f` (`matroska` for `.mkv`, `webm` for `.webm`, `mp4` with `-movflags +faststart` otherwise), merges `nativeDir` with existing `LD_LIBRARY_PATH`, waits 200ms after `destroyForcibly()` on timeout, and deletes `outputFile` when `!ok`.
+- **`DirectJvmStreamDownloader.kt`**:
+  - `private fun startFFmpegProcess(context: Context, cmd: List<String>, workingDir: File?): Process`: sets `LD_LIBRARY_PATH` with package `lib` dir (if directory != `nativeDir`), `nativeLibraryDir`, and any existing `LD_LIBRARY_PATH`; called by `runFFmpegMux` and all three `cutSponsorSegments` invocations.
+- **`ThumbnailStore.kt`**:
+  - `fetchBytes(url: String)`: includes `image/avif,` in `Accept` only when `Build.VERSION.SDK_INT >= Build.VERSION_CODES.S`.
+- **UI & Permissions**:
+  - `DownloadsScreen.kt` `private fun openMediaFile(context: Context, uriString: String?, isAudioOnly: Boolean, outputExt: String?)` and `QueueDrawerModal.kt` `private fun openMediaFile(context: Context, fileUri: String?, isAudioOnly: Boolean, outputExt: String?)`: delegate to `MediaStoreExporter.createViewMediaIntent(...)` with Toast errors on missing file or no handler app.
+  - `YouTubeBrowserScreen.kt`: `enqueueSpecsWithNotice(specs: List<DownloadRequestSpec>, warningMessage: String? = null)`, `pendingStorageSpecs`, `isStoragePermissionInFlight`, and `storagePermissionLauncher` gated to `Build.VERSION.SDK_INT <= Build.VERSION_CODES.P`.
+  - `SettingsScreen.kt`: `isLegacyStorageRequired = Build.VERSION.SDK_INT <= Build.VERSION_CODES.P`, `LifecycleEventObserver` (`ON_RESUME`) cleaned up in `DisposableEffect.onDispose`, `storagePermissionLauncher`, `Context.findActivity()`, and `openAppDetailsSettings(context)` fallback (`Settings.ACTION_APPLICATION_DETAILS_SETTINGS`).
+  - `MainActivity.kt`: `LaunchedEffect(currentTheme.isDark)` calls `enableEdgeToEdge(statusBarStyle = barStyle, navigationBarStyle = barStyle)` with `SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)` / `SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)`.
+
+### 5. Edge Cases, Anti-Bot Defenses & Verification
+
+- **Anti-Bot / Timeout / Leak Defenses**:
+  - Existing WebView User-Agent sanitization, PO Token interception, QuickJS `--js-runtimes quickjs`, `-N 8` SABR defenses, and WorkManager `ForegroundInfo` (`>= Q` 3-arg `FOREGROUND_SERVICE_TYPE_DATA_SYNC`, `< Q` 2-arg) remain unchanged.
+  - `MediaExtractor` is released in `finally`; `FastDirectDownloader.muxViaFfmpeg` deletes partial `.part` output on failure/timeout; `SettingsScreen` unregisters `LifecycleEventObserver` in `onDispose`; `YouTubeBrowserScreen` prevents concurrent permission prompts and dropped batch items via `pendingStorageSpecs` + `isStoragePermissionInFlight`.
+- **Static & Release Build Verification Executed (Post-Final Edit)**:
+  - **Lint / Kotlin Compile**: `.\gradlew.bat :app:compileDebugKotlin :app:lintAnalyzeDebug --offline --console=plain` -> `BUILD SUCCESSFUL` (exit code `0`). Inspected `app/build/intermediates/lint_partial_results/debug/lintAnalyzeDebug/out/{lint-definite.xml,lint-partial.xml,lint-provisional.xml}` — zero `NewApi`, zero `UnusedAttribute`, zero unignored `ScopedStorage`, and no new warnings/errors introduced by these changes (only pre-existing findings such as `FastDirectDownloader.kt` `WrongConstant` and `ObsoleteSdkInt` on `O`/`M`/`v26`).
+  - **Offline Lint Blocker**: `.\gradlew.bat :app:compileDebugKotlin :app:lintDebug --offline --console=plain` failed during `:app:generateDebugAndroidTestLintModel` because `androidx.collection:collection:1.4.0` is not cached in offline mode for `:app:debugAndroidTestCompileClasspath`.
+  - **Release APK Build**: `.\gradlew.bat :app:assembleRelease --console=plain` -> `BUILD SUCCESSFUL` (includes `lintVitalRelease`, R8 minification, and L8 desugaring).
+  - **APK Metadata & Signatures (`aapt` / `apksigner`)**: All four release APKs declare `com.youdrop.app`, `versionCode='1'`, `versionName='0.01'`, `sdkVersion:'28'`, `targetSdkVersion:'35'`, and `com.youdrop.app.fileprovider`, and passed `apksigner verify --print-certs` (`exit=0`) with SHA-256 `21249cb9dc2c2c12f86771ce4aef597b0377d525621b973c18770eb3c61ba25f`.
+  - **`dist/` Release Assets & SHA-256 Checksums**:
+    - `YouDrop-v0.01-arm64-v8a.apk` — `4ead1dab...12c287d`, 64,715,829 bytes
+    - `YouDrop-v0.01-armeabi-v7a.apk` — `302b357a...9d17e70`, 57,547,083 bytes
+    - `YouDrop-v0.01-universal.apk` — `515180ee...d7079b`, 225,177,296 bytes
+    - `YouDrop-v0.01-x86_64.apk` — `ff9f299c...e1dcec`, 67,722,910 bytes
+    - `SHA256SUMS.txt` (379 bytes), `LICENSE` (35,149 bytes), `THIRD_PARTY_NOTICES.md` (2,250 bytes)
+- **Recommended Local Verification Commands (for User Execution)**:
+  - `.\gradlew.bat :app:lintDebug --console=plain`
+  - `.\gradlew.bat :app:testDebugUnitTest --console=plain`
+
+### 6. Supervisor Review Checklist
+
+- [x] `minSdk = 28` configured in `app/build.gradle.kts` with `compileSdk = 35`, `targetSdk = 35`, `useLegacyPackaging = true`, and `desugar_jdk_libs_nio` intact.
+- [x] All dependencies, manifest permissions/services, and XML resources verified compatible with API 28.
+- [x] `FileProvider` manifest entry (`${applicationId}.fileprovider`) and `res/xml/file_paths.xml` match `MediaStoreExporter.createViewMediaIntent(...)` without breaking Android 10+ `MediaStore` URIs.
+- [x] Android 9 `WRITE_EXTERNAL_STORAGE` runtime prompt (browser batch-safe queue + Settings status/App Settings fallback) gated strictly to `<= Build.VERSION_CODES.P`.
+- [x] Pre-API-29 `MediaMuxer` unsupported codecs bypass cleanly to FFmpeg with explicit `-f` format and preserved `LD_LIBRARY_PATH`; AVIF `Accept` header gated to API 31+; `MainActivity` edge-to-edge bar contrast synced with dark/light app theme.
+- [x] `:app:compileDebugKotlin`, `:app:lintAnalyzeDebug --offline`, `:app:assembleRelease` (`lintVitalRelease`), `aapt` manifest check, and `apksigner` signature checks passed.
+- [ ] On-device or emulator Android 9 (API 28) runtime smoke test (permission prompt, public download export, FFmpeg muxing, `FileProvider` open/play, dark/light edge-to-edge bars) and `:app:lintDebug` / `:app:testDebugUnitTest` execution (`RZCW415JDCZ` disconnected before installation).

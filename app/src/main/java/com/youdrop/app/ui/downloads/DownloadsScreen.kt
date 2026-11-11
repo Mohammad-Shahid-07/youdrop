@@ -1,7 +1,6 @@
 package com.youdrop.app.ui.downloads
 
 import android.content.Context
-import android.content.Intent
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateContentSize
@@ -72,12 +71,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.net.toUri
 import com.youdrop.app.core.database.DownloadTaskEntity
 import com.youdrop.app.core.database.TaskStatus
 import com.youdrop.app.core.extractor.formatBytes
 import com.youdrop.app.core.format.formatEta
 import com.youdrop.app.core.queue.QueueRepository
+import com.youdrop.app.core.storage.MediaStoreExporter
 import com.youdrop.app.ui.common.AsyncThumbnailImage
 import com.youdrop.app.ui.theme.AppTheme
 import kotlinx.coroutines.delay
@@ -348,7 +347,7 @@ fun DownloadsScreen(
                             items(completedTasks, key = { it.id }) { task ->
                                 CompletedDownloadCard(
                                     task = task,
-                                    onOpen = { openMediaFile(context, task.outputFileUri) },
+                                    onOpen = { openMediaFile(context, task.outputFileUri, task.isAudioOnly, task.outputExt) },
                                     onOpenYouTube = { onOpenUrl(task.url) },
                                     onDelete = { queueRepository.deleteTask(task.id) }
                                 )
@@ -388,7 +387,7 @@ fun DownloadsScreen(
                             items(completedTasks, key = { it.id }) { task ->
                                 CompletedDownloadCard(
                                     task = task,
-                                    onOpen = { openMediaFile(context, task.outputFileUri) },
+                                    onOpen = { openMediaFile(context, task.outputFileUri, task.isAudioOnly, task.outputExt) },
                                     onOpenYouTube = { onOpenUrl(task.url) },
                                     onDelete = { queueRepository.deleteTask(task.id) }
                                 )
@@ -828,17 +827,27 @@ fun EmptyDownloadsPlaceholder(message: String) {
     }
 }
 
-private fun openMediaFile(context: Context, uriString: String?) {
+private fun openMediaFile(
+    context: Context,
+    uriString: String?,
+    isAudioOnly: Boolean,
+    outputExt: String?
+) {
     if (uriString.isNullOrBlank()) {
         Toast.makeText(context, "Media file path is unavailable", Toast.LENGTH_SHORT).show()
         return
     }
+    val intent = MediaStoreExporter.createViewMediaIntent(
+        context = context,
+        uriString = uriString,
+        isAudioOnly = isAudioOnly,
+        fallbackExt = outputExt
+    )
+    if (intent == null) {
+        Toast.makeText(context, "Media file is unavailable", Toast.LENGTH_SHORT).show()
+        return
+    }
     try {
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uriString.toUri(), if (uriString.contains(".m4a") || uriString.contains(".opus") || uriString.contains(".mp3")) "audio/*" else "video/*")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
         context.startActivity(intent)
     } catch (e: Exception) {
         timber.log.Timber.w(e, "Could not open media intent for: %s", uriString)

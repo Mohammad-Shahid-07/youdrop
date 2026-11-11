@@ -1,13 +1,19 @@
 package com.youdrop.app.ui.settings
 
+import android.Manifest
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -51,6 +57,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -68,6 +75,11 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.youdrop.app.core.engine.DownloadEngineMode
 import com.youdrop.app.core.engine.DownloadEnginePreferences
 import com.youdrop.app.core.engine.YtDlpUpdater
@@ -117,6 +129,49 @@ fun SettingsScreen(
                 true
             }
         )
+    }
+
+    val isLegacyStorageRequired = Build.VERSION.SDK_INT <= Build.VERSION_CODES.P
+    val activity = remember(context) { context.findActivity() }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var hasStoragePermission by remember {
+        mutableStateOf(
+            !isLegacyStorageRequired ||
+                ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    var hasRequestedStoragePermission by remember { mutableStateOf(false) }
+
+    val storagePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        hasStoragePermission = isGranted
+        hasRequestedStoragePermission = true
+        if (!isGranted) {
+            val canShowRationale = activity?.let {
+                ActivityCompat.shouldShowRequestPermissionRationale(it, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            } ?: false
+            if (!canShowRationale) {
+                Toast.makeText(
+                    context,
+                    "Storage permission is blocked. Tap Open App Settings to enable it.",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+
+    if (isLegacyStorageRequired) {
+        DisposableEffect(lifecycleOwner, context) {
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    hasStoragePermission =
+                        ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+                }
+            }
+            lifecycleOwner.lifecycle.addObserver(observer)
+            onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        }
     }
 
     Scaffold(
@@ -662,6 +717,85 @@ fun SettingsScreen(
                         fontSize = 11.sp,
                         color = currentTheme.textSecondary
                     )
+
+                    if (isLegacyStorageRequired) {
+                        val canShowRationale = activity?.let {
+                            ActivityCompat.shouldShowRequestPermissionRationale(it, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                        } ?: false
+                        val openSettingsFallback = hasRequestedStoragePermission && !canShowRationale
+
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(1.dp)
+                                .background(currentTheme.dividerColor)
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Storage Permission (Android 9)",
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp,
+                                    color = currentTheme.textPrimary
+                                )
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = if (hasStoragePermission) {
+                                        "Granted — downloads export to public Downloads."
+                                    } else {
+                                        "Required to export downloads to public Downloads instead of app-private storage."
+                                    },
+                                    fontSize = 11.sp,
+                                    color = currentTheme.textSecondary
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.width(8.dp))
+
+                            val statusColor = if (hasStoragePermission) currentTheme.successGreen else currentTheme.errorRed
+                            Text(
+                                text = if (hasStoragePermission) "GRANTED" else "NOT GRANTED",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = statusColor,
+                                modifier = Modifier
+                                    .background(statusColor.copy(alpha = 0.12f), RoundedCornerShape(6.dp))
+                                    .padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+
+                        if (!hasStoragePermission) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Button(
+                                onClick = {
+                                    if (openSettingsFallback) {
+                                        openAppDetailsSettings(context)
+                                    } else {
+                                        storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = currentAccent.color,
+                                    contentColor = currentAccent.text
+                                ),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.fillMaxWidth().height(40.dp)
+                            ) {
+                                Text(
+                                    text = if (openSettingsFallback) "Open App Settings" else "Grant Storage Permission",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
                 }
             }
 
@@ -790,5 +924,28 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(20.dp))
         }
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+private fun openAppDetailsSettings(context: Context) {
+    try {
+        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = Uri.fromParts("package", context.packageName, null)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        Timber.w(e, "Could not open application details settings")
+        Toast.makeText(
+            context,
+            "Open Settings > Apps > YouDrop > Permissions to enable Storage",
+            Toast.LENGTH_LONG
+        ).show()
     }
 }
